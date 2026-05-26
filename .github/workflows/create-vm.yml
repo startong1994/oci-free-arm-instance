@@ -15,6 +15,7 @@ env:
   OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
   OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
   OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+  SUPPRESS_LABEL_WARNING: "True"
 
 jobs:
   build-and-deploy:
@@ -47,7 +48,68 @@ jobs:
           echo "fingerprint=${{ secrets.OCI_CLI_FINGERPRINT }}" >> ~/.oci/config
           echo "key_file=~/.oci/oci_api_key.pem" >> ~/.oci/config
           echo "region=${{ env.OCI_CLI_REGION }}" >> ~/.oci/config
+
           echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
+
+          echo "Checking OCI inputs..."
+
+          check_required() {
+            name="$1"
+            value="${!name}"
+            if [ -z "$value" ]; then
+              echo "$name: MISSING"
+            else
+              echo "$name: present"
+            fi
+          }
+
+          check_required "COMPARTMENT_ID"
+          check_required "SUBNET_ID"
+          check_required "IMAGE_ID"
+          check_required "AD_NAME"
+          check_required "OCI_CLI_REGION"
+
+          echo "Checking SSH public key format..."
+          if grep -Eq '^(ssh-rsa|ssh-ed25519) ' /home/runner/my_ssh_key.pub; then
+            echo "SSH_PUBLIC_KEY: OK"
+          else
+            echo "SSH_PUBLIC_KEY: BAD FORMAT"
+            head -c 40 /home/runner/my_ssh_key.pub
+            echo
+          fi
+
+          echo "Validating availability domains..."
+          if oci iam availability-domain list --compartment-id "$COMPARTMENT_ID" >/tmp/ad.json 2>/tmp/ad.err; then
+            echo "AD list: OK"
+            if grep -q "\"name\": \"$AD_NAME\"" /tmp/ad.json; then
+              echo "AD_NAME present: OK"
+            else
+              echo "AD_NAME present: FAIL"
+              echo "Available ADs:"
+              grep '"name"' /tmp/ad.json || true
+            fi
+          else
+            echo "AD list: FAIL"
+            cat /tmp/ad.err
+          fi
+
+          echo "Validating subnet..."
+          if oci network subnet get --subnet-id "$SUBNET_ID" >/tmp/subnet.json 2>/tmp/subnet.err; then
+            echo "Subnet: OK"
+          else
+            echo "Subnet: FAIL"
+            cat /tmp/subnet.err
+          fi
+
+          echo "Validating image..."
+          if oci compute image get --image-id "$IMAGE_ID" >/tmp/image.json 2>/tmp/image.err; then
+            echo "Image: OK"
+          else
+            echo "Image: FAIL"
+            cat /tmp/image.err
+          fi
+
+          echo "Preflight complete. Attempting launch..."
 
           OCI_OUTPUT=$(oci compute instance launch \
             --compartment-id "$COMPARTMENT_ID" \
